@@ -7,7 +7,7 @@
 
   [![License](https://img.shields.io/github/license/Frankieli123/dokploy-i18n?style=flat-square)](LICENSE.MD)
   [![Stars](https://img.shields.io/github/stars/Frankieli123/dokploy-i18n?style=flat-square)](https://github.com/Frankieli123/dokploy-i18n/stargazers)
-  [![Docker Pulls](https://img.shields.io/docker/pulls/a3180623/dokploy-i18n?style=flat-square)](https://hub.docker.com/r/a3180623/dokploy-i18n)
+  [![Container](https://img.shields.io/badge/容器镜像-GHCR-blue)](https://github.com/Mike09811/dokploy/pkgs/container/dokploy)
 
   <p>Join us on Discord for help, feedback, and discussions!</p>
   <a href="https://discord.gg/2tBnJ3jDJc">
@@ -92,13 +92,9 @@ DOKPLOY_VERSION=canary bash install.sh
 <details>
 <summary>更新检查地址（tags URL）</summary>
 
-Dokploy 通过镜像 tags 列表 API 判断是否有新版本。默认请求 Docker Hub：
+默认使用自己的镜像 `ghcr.io/mike09811/dokploy`，并通过 GitHub Container Registry 检查更新。首次构建完成后，需在 GitHub Packages 中将镜像设为公开，安装脚本才能免登录拉取。
 
-```
-https://hub.docker.com/v2/repositories/a3180623/dokploy-i18n/tags
-```
-
-在国内若 Docker Hub 访问不稳定，可在 Web UI 配置镜像地址：
+在国内若 GHCR 访问不稳定，可在 Web UI 配置兼容 Docker Hub tags API 的更新检查地址：
 
 **路径**：`Dashboard → Settings → Server → Web Server → Update → Update Source`
 

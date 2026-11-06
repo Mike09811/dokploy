@@ -8,6 +8,7 @@ import {
 import { and, eq } from "drizzle-orm";
 import { quote } from "shell-quote";
 import { db } from "../db";
+import { getGhcrDigest } from "./ghcr";
 import { compose } from "../db/schema";
 import {
 	initializeStandaloneTraefik,
@@ -177,7 +178,7 @@ export const getDokployImageTag = () => {
 };
 
 export const getDokployImage = (tag?: string | null) => {
-	return `a3180623/dokploy-i18n:${tag || getDokployImageTag()}`;
+	return `ghcr.io/mike09811/dokploy:${tag || getDokployImageTag()}`;
 };
 
 export const pullLatestRelease = async (tag?: string | null) => {
@@ -214,6 +215,16 @@ export const getUpdateData = async (
 	} catch (error) {
 		// TODO: Docker versions 29.0.0 change the way to get the service image digest, so we need to update this in the future we upgrade to that version.
 		return DEFAULT_UPDATE_DATA;
+	}
+
+	if (!tagsUrl?.trim() || tagsUrl.trim() === DEFAULT_UPDATE_TAGS_URL) {
+		const tag = getDokployImageTag();
+		try {
+			const digest = await getGhcrDigest(tag, getUpdateFetchTimeoutMs());
+			return { latestVersion: tag, updateAvailable: digest !== currentDigest };
+		} catch {
+			return DEFAULT_UPDATE_DATA;
+		}
 	}
 
 	const baseUrl = normalizeUpdateTagsUrl(tagsUrl);

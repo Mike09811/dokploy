@@ -7,7 +7,7 @@
 
   [![License](https://img.shields.io/github/license/Frankieli123/dokploy-i18n?style=flat-square)](../../LICENSE.MD)
   [![Stars](https://img.shields.io/github/stars/Frankieli123/dokploy-i18n?style=flat-square)](https://github.com/Frankieli123/dokploy-i18n/stargazers)
-  [![Docker Pulls](https://img.shields.io/docker/pulls/a3180623/dokploy-i18n?style=flat-square)](https://hub.docker.com/r/a3180623/dokploy-i18n)
+  [![Container](https://img.shields.io/badge/容器镜像-GHCR-blue)](https://github.com/Mike09811/dokploy/pkgs/container/dokploy)
 
   <p>加入我们的 Discord，获取帮助、反馈和讨论！</p>
   <a href="https://discord.gg/2tBnJ3jDJc">

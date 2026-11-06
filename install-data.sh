@@ -32,7 +32,7 @@ is_proxmox_lxc() {
 
 install_dokploy() {
     VERSION_TAG=$(detect_version)
-    DOCKER_IMAGE="a3180623/dokploy-i18n:${VERSION_TAG}"
+    DOCKER_IMAGE="ghcr.io/mike09811/dokploy:${VERSION_TAG}"
 
     data_dir="${DOKPLOY_DATA_DIR:-/data}"
     dokploy_dir="${DOKPLOY_ETC_DIR:-${data_dir%/}/dokploy}"
@@ -453,7 +453,7 @@ EOF
 
 update_dokploy() {
     VERSION_TAG=$(detect_version)
-    DOCKER_IMAGE="a3180623/dokploy-i18n:${VERSION_TAG}"
+    DOCKER_IMAGE="ghcr.io/mike09811/dokploy:${VERSION_TAG}"
     data_dir="${DOKPLOY_DATA_DIR:-/data}"
     dokploy_dir="${DOKPLOY_ETC_DIR:-${data_dir%/}/dokploy}"
 

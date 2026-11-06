@@ -29,7 +29,7 @@ is_proxmox_lxc() {
 install_dokploy() {
     # Detect version tag
     VERSION_TAG=$(detect_version)
-    DOCKER_IMAGE="a3180623/dokploy-i18n:${VERSION_TAG}"
+    DOCKER_IMAGE="ghcr.io/mike09811/dokploy:${VERSION_TAG}"
     
     echo "Installing Dokploy version: ${VERSION_TAG}"
     if [ "$(id -u)" != "0" ]; then
@@ -454,7 +454,7 @@ EOF
 update_dokploy() {
     # Detect version tag
     VERSION_TAG=$(detect_version)
-    DOCKER_IMAGE="a3180623/dokploy-i18n:${VERSION_TAG}"
+    DOCKER_IMAGE="ghcr.io/mike09811/dokploy:${VERSION_TAG}"
     
     echo "Updating Dokploy to version: ${VERSION_TAG}"
     
