@@ -51,10 +51,10 @@
 
 | 场景 | 命令 |
 |------|------|
-| **通用环境** | `curl -fsSL https://raw.githubusercontent.com/Frankieli123/dokploy-i18n/main/install.sh \| bash` |
-| **数据落盘到 `/data`** | `curl -fsSL https://raw.githubusercontent.com/Frankieli123/dokploy-i18n/main/install-data.sh \| bash` |
-| **国内网络加速** | `curl -fsSL https://raw.githubusercontent.com/Frankieli123/dokploy-i18n/main/install-china.sh \| bash` |
-| **国内 + 数据落盘**（推荐） | `curl -fsSL https://raw.githubusercontent.com/Frankieli123/dokploy-i18n/main/install-data-china.sh \| bash` |
+| **通用环境** | `curl -fsSL https://raw.githubusercontent.com/Mike09811/dokploy/main/install.sh \| bash` |
+| **数据落盘到 `/data`** | `curl -fsSL https://raw.githubusercontent.com/Mike09811/dokploy/main/install-data.sh \| bash` |
+| **国内网络加速** | `curl -fsSL https://raw.githubusercontent.com/Mike09811/dokploy/main/install-china.sh \| bash` |
+| **国内 + 数据落盘**（推荐） | `curl -fsSL https://raw.githubusercontent.com/Mike09811/dokploy/main/install-data-china.sh \| bash` |
 
 安装后访问：`http://<your-server-ip>:3000`
 
