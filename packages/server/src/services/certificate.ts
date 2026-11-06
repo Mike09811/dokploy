@@ -1,0 +1,160 @@
+import fs from "node:fs";
+import path from "node:path";
+import { paths } from "@dokploy/server/constants";
+import { db } from "@dokploy/server/db";
+import {
+	type apiCreateCertificate,
+	certificates,
+} from "@dokploy/server/db/schema";
+import { removeDirectoryIfExistsContent } from "@dokploy/server/utils/filesystem/directory";
+import { TRPCError } from "@trpc/server";
+import { eq } from "drizzle-orm";
+import { stringify } from "yaml";
+import type { z } from "zod";
+import { encodeBase64 } from "../utils/docker/utils";
+import { execAsyncRemote } from "../utils/process/execAsync";
+
+export type Certificate = typeof certificates.$inferSelect;
+
+export const findCertificateById = async (certificateId: string) => {
+	const certificate = await db.query.certificates.findFirst({
+		where: eq(certificates.certificateId, certificateId),
+	});
+
+	if (!certificate) {
+		throw new TRPCError({
+			code: "NOT_FOUND",
+			message: "Certificate not found",
+		});
+	}
+
+	return certificate;
+};
+
+export const createCertificate = async (
+	certificateData: z.infer<typeof apiCreateCertificate>,
+	organizationId: string,
+) => {
+	const certificate = await db
+		.insert(certificates)
+		.values({
+			...certificateData,
+			organizationId: organizationId,
+		})
+		.returning();
+
+	if (!certificate || certificate[0] === undefined) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "Failed to create the certificate",
+		});
+	}
+
+	const cer = certificate[0];
+
+	try {
+		await createCertificateFiles(cer);
+	} catch (error) {
+		try {
+			await removeCertificateFiles(cer);
+		} catch {}
+		await db
+			.delete(certificates)
+			.where(eq(certificates.certificateId, cer.certificateId));
+		throw error;
+	}
+
+	return cer;
+};
+
+export const removeCertificateById = async (certificateId: string) => {
+	const certificate = await findCertificateById(certificateId);
+	await removeCertificateFiles(certificate);
+
+	const result = await db
+		.delete(certificates)
+		.where(eq(certificates.certificateId, certificateId))
+		.returning();
+
+	if (!result) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "Failed to delete the certificate",
+		});
+	}
+
+	return result;
+};
+
+const removeCertificateFiles = async (certificate: Certificate) => {
+	const { CERTIFICATES_PATH, DYNAMIC_TRAEFIK_PATH } = paths(
+		!!certificate.serverId,
+	);
+	const certDir = path.join(CERTIFICATES_PATH, certificate.certificatePath);
+	const configFile = path.join(
+		DYNAMIC_TRAEFIK_PATH,
+		`certificate-${certificate.certificatePath}.yml`,
+	);
+
+	if (certificate.serverId) {
+		await execAsyncRemote(
+			certificate.serverId,
+			`rm -rf "${certDir}"; rm -f "${configFile}"`,
+		);
+	} else {
+		await removeDirectoryIfExistsContent(certDir);
+		if (fs.existsSync(configFile)) {
+			fs.rmSync(configFile, { force: true });
+		}
+	}
+};
+
+const createCertificateFiles = async (certificate: Certificate) => {
+	const { CERTIFICATES_PATH, DYNAMIC_TRAEFIK_PATH } = paths(
+		!!certificate.serverId,
+	);
+	const certDir = path.join(CERTIFICATES_PATH, certificate.certificatePath);
+	const crtPath = path.join(certDir, "chain.crt");
+	const keyPath = path.join(certDir, "privkey.key");
+
+	const chainPath = path.join(certDir, "chain.crt");
+	const keyPathDocker = path.join(certDir, "privkey.key");
+	const traefikConfig = {
+		tls: {
+			certificates: [
+				{
+					certFile: chainPath,
+					keyFile: keyPathDocker,
+				},
+			],
+		},
+	};
+	const yamlConfig = stringify(traefikConfig);
+	const configFile = path.join(
+		DYNAMIC_TRAEFIK_PATH,
+		`certificate-${certificate.certificatePath}.yml`,
+	);
+
+	if (certificate.serverId) {
+		const certificateData = encodeBase64(certificate.certificateData);
+		const privateKey = encodeBase64(certificate.privateKey);
+		const encodedConfig = encodeBase64(yamlConfig);
+		const command = `
+			mkdir -p ${certDir};
+			echo "${certificateData}" | base64 -d > "${crtPath}";
+			echo "${privateKey}" | base64 -d > "${keyPath}";
+			echo "${encodedConfig}" | base64 -d > "${configFile}";
+		`;
+
+		await execAsyncRemote(certificate.serverId, command);
+	} else {
+		if (!fs.existsSync(certDir)) {
+			fs.mkdirSync(certDir, { recursive: true });
+		}
+
+		fs.writeFileSync(crtPath, certificate.certificateData);
+		fs.writeFileSync(keyPath, certificate.privateKey);
+
+		fs.writeFileSync(configFile, yamlConfig);
+	}
+};

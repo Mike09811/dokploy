@@ -1,0 +1,211 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, posix } from "node:path";
+import { IS_CLOUD, paths } from "@dokploy/server/constants";
+import type { Destination } from "@dokploy/server/services/destination";
+import { quote } from "shell-quote";
+import { getS3Credentials } from "../backups/utils";
+import { execAsync } from "../process/execAsync";
+import { LEGACY_BETTER_AUTH_SECRET } from "../../lib/auth-secret";
+import {
+	getDokployDatabaseCreateCommand,
+	preparePostgresDatabaseCreation,
+} from "./postgres-database";
+
+export const restoreWebServerBackup = async (
+	destination: Destination,
+	backupFile: string,
+	emit: (log: string) => void,
+) => {
+	if (IS_CLOUD) {
+		return;
+	}
+	try {
+		const normalizedBackupFile = String(backupFile ?? "")
+			.trim()
+			.replace(/\\/g, "/")
+			.replace(/^\/+/, "");
+		const backupFileName = posix.basename(normalizedBackupFile);
+		if (!backupFileName || backupFileName === "." || backupFileName === "/") {
+			throw new Error("Invalid backup file path");
+		}
+
+		const rcloneFlags = getS3Credentials(destination);
+		const bucketPath = `:s3:${destination.bucket}`;
+		const backupPath = `${bucketPath}/${normalizedBackupFile}`;
+		const { BASE_PATH } = paths();
+
+		// Create a temporary directory outside of BASE_PATH
+		const tempDir = await mkdtemp(join(tmpdir(), "dokploy-restore-"));
+		const localBackupPath = `${tempDir}/${backupFileName}`;
+
+		try {
+			emit("Starting restore...");
+			emit(`Backup path: ${backupPath}`);
+			emit(`Temp directory: ${tempDir}`);
+
+			// Create temp directory
+			emit("Creating temporary directory...");
+			await execAsync(`mkdir -p ${quote([tempDir])}`);
+
+			// Download backup from S3
+			emit("Downloading backup from S3...");
+			await execAsync(
+				`rclone copyto ${rcloneFlags.join(" ")} ${quote([backupPath])} ${quote([localBackupPath])}`,
+			);
+
+			// List files before extraction
+			emit("Listing files before extraction...");
+			const { stdout: beforeFiles } = await execAsync(`ls -la ${quote([tempDir])}`);
+			emit(`Files before extraction: ${beforeFiles}`);
+
+			// Extract backup
+			emit("Extracting backup...");
+			await execAsync(
+				`cd ${quote([tempDir])} && unzip ${quote([backupFileName])} > /dev/null 2>&1`,
+			);
+
+			// Validate extracted structure before overwriting BASE_PATH
+			const { stdout: hasFilesystemDir } = await execAsync(
+				`test -d ${quote([`${tempDir}/filesystem`])} && echo ok || true`,
+			);
+			if (!hasFilesystemDir.includes("ok")) {
+				throw new Error(
+					"Invalid backup structure: filesystem folder not found",
+				);
+			}
+
+			// Validate database dump exists (either compressed or plain)
+			const { stdout: hasAnyDbDump } = await execAsync(
+				`ls ${quote([`${tempDir}/database.sql`])} ${quote([`${tempDir}/database.sql.gz`])} 2>/dev/null | head -n 1 || true`,
+			);
+			if (!hasAnyDbDump.trim()) {
+				throw new Error(
+					"Invalid backup structure: database.sql(.gz) not found",
+				);
+			}
+
+			// Restore filesystem first
+			emit("Restoring filesystem...");
+			emit(`Copying from ${tempDir}/filesystem/* to ${BASE_PATH}/`);
+
+			// First clean the target directory
+			emit("Cleaning target directory...");
+			await execAsync(`rm -rf "${BASE_PATH}/"*`);
+
+			// Ensure the target directory exists
+			emit("Setting up target directory...");
+			await execAsync(`mkdir -p "${BASE_PATH}"`);
+
+			// Copy files preserving permissions
+			emit("Copying files...");
+			await execAsync(`cp -rp "${tempDir}/filesystem/"* "${BASE_PATH}/"`);
+
+			const backupAuthSecret = `${tempDir}/filesystem/secrets/better-auth-secret`;
+			const { stdout: hasAuthSecret } = await execAsync(
+				`test -s ${quote([backupAuthSecret])} && echo ok || true`,
+			);
+			if (!hasAuthSecret.includes("ok")) {
+				emit("Legacy backup detected, restoring the compatible auth secret...");
+				const authSecretDirectory = `${BASE_PATH}/secrets`;
+				const authSecretFile = `${authSecretDirectory}/better-auth-secret`;
+				await execAsync(
+					`mkdir -p ${quote([authSecretDirectory])} && chmod 700 ${quote([authSecretDirectory])} && printf %s ${quote([LEGACY_BETTER_AUTH_SECRET])} > ${quote([authSecretFile])} && chmod 600 ${quote([authSecretFile])}`,
+				);
+			}
+
+			// Now handle database restore
+			emit("Starting database restore...");
+
+			// Check if database.sql.gz exists and decompress it
+			const { stdout: hasGzFile } = await execAsync(
+				`ls ${quote([`${tempDir}/database.sql.gz`])} || true`,
+			);
+			if (hasGzFile.includes("database.sql.gz")) {
+				emit("Found compressed database file, decompressing...");
+				await execAsync(`cd ${quote([tempDir])} && gunzip database.sql.gz`);
+			}
+
+			// Verify database file exists
+			const { stdout: hasSqlFile } = await execAsync(
+				`ls ${quote([`${tempDir}/database.sql`])} || true`,
+			);
+			if (!hasSqlFile.includes("database.sql")) {
+				throw new Error("Database file not found after extraction");
+			}
+
+			const { stdout: postgresContainer } = await execAsync(
+				`docker ps --filter "name=dokploy-postgres" --filter "status=running" -q | head -n 1`,
+			);
+
+			if (!postgresContainer) {
+				throw new Error("Dokploy Postgres container not found");
+			}
+
+			const postgresContainerId = postgresContainer.trim();
+			const databaseTemplate = await preparePostgresDatabaseCreation(
+				postgresContainerId,
+				emit,
+			);
+
+			// Drop and recreate database
+			emit("Disconnecting all users from database...");
+			await execAsync(
+				`docker exec ${postgresContainerId} psql -U dokploy postgres -c "SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname = 'dokploy' AND pid <> pg_backend_pid();"`,
+			);
+
+			emit("Dropping existing database...");
+			await execAsync(
+				`docker exec ${postgresContainerId} psql -U dokploy postgres -c "DROP DATABASE IF EXISTS dokploy;"`,
+			);
+
+			emit("Creating fresh database...");
+			await execAsync(
+				getDokployDatabaseCreateCommand(postgresContainerId, databaseTemplate),
+			);
+
+			// Copy the backup file into the container
+			emit("Copying backup file into container...");
+			await execAsync(
+				`docker cp ${quote([`${tempDir}/database.sql`])} ${quote([`${postgresContainerId}:/tmp/database.sql`])}`,
+			);
+
+			// Verify file in container
+			emit("Verifying file in container...");
+			await execAsync(
+				`docker exec ${postgresContainerId} ls -l /tmp/database.sql`,
+			);
+
+			// Restore from the copied file
+			emit("Running database restore...");
+			await execAsync(
+				`docker exec ${postgresContainerId} pg_restore -v -U dokploy -d dokploy /tmp/database.sql`,
+			);
+
+			// Cleanup the temporary file in the container
+			emit("Cleaning up container temp file...");
+			await execAsync(
+				`docker exec ${postgresContainerId} rm /tmp/database.sql`,
+			);
+
+			emit("Running database migrations...");
+			await execAsync("node -r dotenv/config dist/migration.mjs");
+
+			emit("Restore completed successfully!");
+		} finally {
+			// Cleanup
+			emit("Cleaning up temporary files...");
+			await execAsync(`rm -rf ${tempDir}`);
+		}
+	} catch (error) {
+		console.error(error);
+		emit(
+			`Error: ${
+				error instanceof Error
+					? error.message
+					: "Error restoring web server backup"
+			}`,
+		);
+		throw error;
+	}
+};

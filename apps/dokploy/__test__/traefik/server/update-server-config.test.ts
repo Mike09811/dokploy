@@ -1,0 +1,191 @@
+import { fs, vol } from "memfs";
+
+vi.mock("node:fs", () => ({
+	...fs,
+	default: fs,
+}));
+
+import { paths } from "@dokploy/server/constants";
+import type { User } from "@dokploy/server/services/user";
+import {
+	createDefaultServerTraefikConfig,
+	migrateCertificateTraefikConfigs,
+} from "@dokploy/server/setup/traefik-setup";
+import { loadOrCreateConfig } from "@dokploy/server/utils/traefik/application";
+import type { FileConfig } from "@dokploy/server/utils/traefik/file-types";
+import { updateServerTraefik } from "@dokploy/server/utils/traefik/web-server";
+import { beforeEach, expect, test, vi } from "vitest";
+
+const baseAdmin: User = {
+	https: false,
+	enablePaidFeatures: false,
+	allowImpersonation: false,
+	role: "user",
+	metricsConfig: {
+		containers: {
+			refreshRate: 20,
+			services: {
+				include: [],
+				exclude: [],
+			},
+		},
+		server: {
+			type: "Dokploy",
+			cronJob: "",
+			port: 4500,
+			refreshRate: 20,
+			retentionDays: 2,
+			token: "",
+			thresholds: {
+				cpu: 0,
+				memory: 0,
+			},
+			urlCallback: "",
+		},
+	},
+	cleanupCacheApplications: false,
+	cleanupCacheOnCompose: false,
+	cleanupCacheOnPreviews: false,
+	createdAt: new Date(),
+	serverIp: null,
+	certificateType: "none",
+	host: null,
+	additionalHosts: [],
+	letsEncryptEmail: null,
+	sshPrivateKey: null,
+	enableAutoCheckUpdates: true,
+	enableDockerCleanup: false,
+	logCleanupCron: null,
+	serversQuantity: 0,
+	stripeCustomerId: "",
+	stripeSubscriptionId: "",
+	banExpires: new Date(),
+	banned: true,
+	banReason: "",
+	email: "",
+	expirationDate: "",
+	id: "",
+	isRegistered: false,
+	name: "",
+	createdAt2: new Date().toISOString(),
+	emailVerified: false,
+	image: "",
+	updatedAt: new Date(),
+	twoFactorEnabled: false,
+	updateTagsUrl: "",
+};
+
+beforeEach(() => {
+	vol.reset();
+	createDefaultServerTraefikConfig();
+});
+
+test("Should read the configuration file", () => {
+	const config: FileConfig = loadOrCreateConfig("dokploy");
+	expect(config.http?.routers?.["dokploy-router-app"]?.service).toBe(
+		"dokploy-service-app",
+	);
+});
+
+test("Should move legacy certificate configs to the watched directory", () => {
+	const { CERTIFICATES_PATH, DYNAMIC_TRAEFIK_PATH } = paths();
+	const legacyDirectory = `${CERTIFICATES_PATH}/certificate-example`;
+	const legacyConfig = `${legacyDirectory}/certificate.yml`;
+	const migratedConfig = `${DYNAMIC_TRAEFIK_PATH}/certificate-certificate-example.yml`;
+	vol.mkdirSync(legacyDirectory, { recursive: true });
+	vol.writeFileSync(legacyConfig, "tls: {}", "utf8");
+
+	migrateCertificateTraefikConfigs();
+
+	expect(vol.existsSync(legacyConfig)).toBe(false);
+	expect(vol.readFileSync(migratedConfig, "utf8")).toBe("tls: {}");
+});
+
+test("Should apply redirect-to-https", () => {
+	updateServerTraefik(
+		{
+			...baseAdmin,
+			https: true,
+			certificateType: "letsencrypt",
+		},
+		"example.com",
+	);
+
+	const config: FileConfig = loadOrCreateConfig("dokploy");
+
+	expect(config.http?.routers?.["dokploy-router-app"]?.middlewares).toContain(
+		"redirect-to-https",
+	);
+});
+
+test("Should enable TLS without a resolver for uploaded certificates", () => {
+	updateServerTraefik(
+		{
+			...baseAdmin,
+			https: true,
+			certificateType: "none",
+		},
+		"example.com",
+	);
+
+	const config: FileConfig = loadOrCreateConfig("dokploy");
+	const secureRouter = config.http?.routers?.["dokploy-router-app-secure"];
+
+	expect(secureRouter?.tls).toEqual({});
+});
+
+test("Should change only host when no certificate", () => {
+	updateServerTraefik(baseAdmin, "example.com");
+
+	const config: FileConfig = loadOrCreateConfig("dokploy");
+
+	expect(config.http?.routers?.["dokploy-router-app-secure"]).toBeUndefined();
+});
+
+test("Should support multiple panel hosts in the same router rule", () => {
+	updateServerTraefik(
+		{
+			...baseAdmin,
+			additionalHosts: ["admin.example.com"],
+			https: true,
+			certificateType: "letsencrypt",
+		},
+		"panel.example.com",
+		["admin.example.com"],
+	);
+
+	const config: FileConfig = loadOrCreateConfig("dokploy");
+
+	expect(config.http?.routers?.["dokploy-router-app"]?.rule).toBe(
+		"Host(`panel.example.com`) || Host(`admin.example.com`)",
+	);
+	expect(config.http?.routers?.["dokploy-router-app-secure"]?.rule).toBe(
+		"Host(`panel.example.com`) || Host(`admin.example.com`)",
+	);
+});
+
+test("Should not touch config without host", () => {
+	const originalConfig: FileConfig = loadOrCreateConfig("dokploy");
+
+	updateServerTraefik(baseAdmin, null);
+
+	const config: FileConfig = loadOrCreateConfig("dokploy");
+
+	expect(originalConfig).toEqual(config);
+});
+
+test("Should remove websecure if https rollback to http", () => {
+	updateServerTraefik(
+		{ ...baseAdmin, certificateType: "letsencrypt" },
+		"example.com",
+	);
+
+	updateServerTraefik({ ...baseAdmin, certificateType: "none" }, "example.com");
+
+	const config: FileConfig = loadOrCreateConfig("dokploy");
+
+	expect(config.http?.routers?.["dokploy-router-app-secure"]).toBeUndefined();
+	expect(
+		config.http?.routers?.["dokploy-router-app"]?.middlewares,
+	).not.toContain("redirect-to-https");
+});
